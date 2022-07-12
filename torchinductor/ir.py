@@ -23,6 +23,7 @@ from . import dependencies
 from .codegen.common import _simplify_loops
 from .dependencies import extract_read_writes
 from .utils import sympy_product
+from .utils import rankmin
 from .virtualized import V
 from .virtualized import ops
 
@@ -46,6 +47,31 @@ def fuse_reindexing(reindex1, reindex2):
 
     return reindex
 
+def compatible_rank(ranks: numpy.array):
+    """
+    if each row of ranks is comptible with others (same order)
+    e.g. [0, 1, 3, 1] is compatible with [0, 1, 3, 2] or [0, 2, 3, 1];
+    but [0, 1, 2, 3] is not compatible with [0, 2, 1, 3]
+
+    return:
+    compatible or not: boolean
+    result of compatible rank given ranks: 1d numpy array
+    """
+    if len(ranks) == 0:
+        return True, None
+    dim = ranks.shape[1]
+    col_checked = numpy.array([])
+    result = numpy.zeros(dim, numpy.int)
+    for d in range(dim - 1, -1, -1):
+        col_to_check = numpy.unique(numpy.where(ranks == d))
+        col_to_check = numpy.setdiff1d(col_to_check, col_checked)
+        for col in col_to_check:
+            if any(ranks[:, col] > d):
+                # every element in col should <= d
+                return False, None
+            result[col] = d    
+        col_checked.extend(col_to_check)
+    return True, result
 
 class ModularIndexing(sympy.Function):
     """
@@ -1109,10 +1135,13 @@ class FlexibleLayout(Layout):
             self.offset,
         )
 
-    def __init__(self, device, dtype, size):
+    def __init__(self, device, dtype, size, stride=None):
         super(FlexibleLayout, self).__init__(
             device, dtype, size, FlexibleLayout.contiguous_strides(size)
         )
+        # preferred stride when decide layout
+        # do not gauranteen to be fulfilled
+        self.preferred_stride = stride
 
 
 class AliasedLayout(Layout):
@@ -1224,6 +1253,11 @@ class Buffer(IRNode):
         assert isinstance(self.layout, FlexibleLayout)
         self.layout = self.layout.as_fill_order(order)
 
+    def get_layout_constraints(self):
+        if isinstance(self.layout, FlexibleLayout):
+            return self.layout.constraints
+        return None
+
     def make_loader(self):
         def loader(index):
             indexer = self.layout.make_indexer()
@@ -1325,11 +1359,34 @@ class ComputedBuffer(Buffer):
                 self.data.get_size(), self.data.get_reduction_size()
             )
             reads = self.get_read_writes().reads
+            reads_bufs = [
+                V.graph.name_to_buffer[r.name]
+                if r.name in V.graph.name_to_buffer.keys() else None
+                for r in reads
+            ]
             # only consider reads to buffer of same size
             reads = [
                 r.index.subs({v: sympy.Integer(0) for v in reduction_vars})
                 for r in reads
             ]
+
+            strides_reads = []
+            for reads_buf in reads_bufs:
+                if isinstance(reads_buf, ExternKernel):
+                    # get the rule to decide self.layout
+                    constraint = reads_buf.get_constraint(self)
+                    if constraint is not None:
+                        strides_reads.append(constraint)
+            
+            # rank for each row in strides_reads
+            ranks = rankmin(numpy.array(strides_reads))
+            no_conflict, compatible_order = compatible_rank(ranks)
+            assert no_conflict, f"could not satisfy all constriants of {self.get_name()}: {strides_reads}"
+
+            if len(numpy.unique(compatible_rank)) == len(compatible_rank):
+                # only 1 possible order of stride
+                self.freeze_layout_with_fill_order(compatible_order)
+                return
 
             if reads:
                 stride_lengths = numpy.array(
@@ -1339,7 +1396,7 @@ class ComputedBuffer(Buffer):
                 from .scheduler import pick_loop_order
 
                 self.freeze_layout_with_fill_order(
-                    pick_loop_order(stride_lengths, self.get_size())
+                    pick_loop_order(stride_lengths, self.get_size(), compatible_order)
                 )
 
         if isinstance(self.layout, FlexibleLayout):
@@ -1676,7 +1733,66 @@ class ExternKernel(InputsKernel):
     output_view: Optional[ReinterpretView] = None
 
     def decide_layout(self):
-        self.freeze_layout()
+        if isinstance(self.layout, FlexibleLayout):
+            reads = self.get_read_writes().reads
+            reads_bufs = [
+                V.graph.name_to_buffer[r.name]
+                if r.name in V.graph.name_to_buffer.keys() else None
+                for r in reads
+            ]
+            strides_reads = []
+            for reads_buf in reads_bufs:
+                if isinstance(reads_buf, ComputedBuffer):
+                    # get the rule to decide self.layout
+                    constraint = self.apply_constraint(reads_buf)
+                    if constraint is not None:
+                        strides_reads.append(constraint)
+
+            if len(strides_reads) == 0:
+                if self.layout.preferred_stride is not None:
+                    # use preferred stride if no constraints
+                    self.freeze_layout_with_fill_order(self.layout.preferred_stride)
+                else:
+                    # contiguous as default
+                    self.freeze_layout()
+                return    
+
+            # rank for each row in strides_reads
+            ranks = rankmin(numpy.array(strides_reads))
+            no_conflict, compatible_order = compatible_rank(ranks)
+            assert no_conflict, f"could not satisfy all constriants of {self.get_name()}: {strides_reads}"
+
+            if len(numpy.unique(compatible_rank)) == len(compatible_rank):
+                # only 1 possible order of stride
+                self.freeze_layout_with_fill_order(compatible_order)
+                return
+            else:
+                # if multiple choice, first check if preferred_stride is compatible as current compatible_order
+                if self.layout.preferred_stride is not None:
+                    preferred_rank = rankmin(numpy.array(self.layout.preferred_stride))
+                    no_conflict, compatible_order = compatible_rank([compatible_order, preferred_rank])
+                    if no_conflict:
+                        self.freeze_layout_with_fill_order(self.layout.preferred_stride)
+                        return
+                    else:
+                        # TODO: get unique index from compatible_order!!!!
+                        unique_order = None
+
+
+        if isinstance(self.layout, FlexibleLayout):
+            self.freeze_layout()
+
+    def get_constraint(self, x):
+        """
+        get constraints for x if x is constrained by this kernel
+        """
+        pass
+
+    def apply_constraint(self, x):
+        """
+        apply constraints of xto this kernel if self is constrained by x
+        """
+        pass
 
     @staticmethod
     def copy_input(x):
@@ -2257,7 +2373,7 @@ class Convolution(ExternKernelAlloc):
         else:
             order = list(reversed(range(len(output_size))))
 
-        output_layout = FixedLayout(
+        output_layout = FlexibleLayout(
             x.get_device(),
             x.get_dtype(),
             output_size,
@@ -2276,6 +2392,13 @@ class Convolution(ExternKernelAlloc):
                 (x, weight),
                 (bias, stride, padding, dilation, transposed, output_padding, groups),
             )
+
+
+    def get_constraint(self, x):
+        # Conv 's input x must have the same stride order as output
+        if x == self.inputs[0] and isinstance(self.layout, FixedLayout):
+            return self.stride
+        return None
 
     def map_args(self):
         # x, w, bias

@@ -3,6 +3,7 @@ import operator
 
 import sympy
 import torch
+import numpy
 
 
 @functools.lru_cache(None)
@@ -37,3 +38,10 @@ def sympy_product(it):
 
 def unique(it):
     return {id(x): x for x in it}.values()
+
+def rankmin(x):
+    # https://stackoverflow.com/questions/5284646/rank-items-in-an-array-using-python-numpy-without-sorting-array-twice
+    u, inv, counts = numpy.unique(x, return_inverse=True, return_counts=True)
+    csum = numpy.zeros_like(counts)
+    csum[1:] = counts[:-1].cumsum()
+    return csum[inv]

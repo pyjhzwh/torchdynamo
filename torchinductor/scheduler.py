@@ -168,7 +168,7 @@ class NopKernelSchedulerNode(BaseSchedulerNode):
         return 200
 
 
-def pick_loop_order(stride_lengths, sizes):
+def pick_loop_order(stride_lengths, sizes, order_constraints=None):
     """
     A heuristic to decide loop iteration orders.  This has not been well
     tuned and may be something we should autotune.
@@ -179,6 +179,11 @@ def pick_loop_order(stride_lengths, sizes):
         if sizes[a] == 1 or sizes[b] == 1:
             # 1-sizes don't matter, just move them to the end
             return cmp(sizes[a] == 1, sizes[b] == 1)
+
+        if order_constraints is not None:
+            if order_constraints[a] != order_constraints[b]:
+                # enforce the order if order_constraints val are not equal
+                return order_constraints[a] < order_constraints[b]
 
         a_first = np.logical_or(
             stride_lengths[:, b] == 0, stride_lengths[:, a] < stride_lengths[:, b]
