@@ -79,7 +79,6 @@ def reads_from_conv(buf, var_ranges):
         indexer = buf.layout.as_fixed().make_indexer()
         # sizes = buf.get_size()
         index_vars = sorted(var_ranges, key=lambda var: var.name)
-        #[sympy.Symbol(f"q{i}") for i in range(len(sizes))]
         index = indexer(index_vars)
         return True, index
     # for case like
@@ -111,7 +110,6 @@ def layout_priority_idx(reads_bufs, memory_addrs, var_ranges):
     priority_idx regarding memory_addrs idx
     memory_addrs - update memory_addrs with the true addr if needed
     """
-    
     priority_idx = []
     for i, reads_buf in enumerate(reads_bufs):
         read_from_conv, mem_addr = reads_from_conv(reads_buf, var_ranges)
