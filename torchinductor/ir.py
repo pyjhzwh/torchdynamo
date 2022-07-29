@@ -1267,6 +1267,7 @@ class MutationLayout(Layout):
 class Buffer(IRNode):
     name: str
     layout: Layout
+    layout_priority = 0
 
     def make_indexer(self):
         return self.layout.make_indexer()
@@ -1431,11 +1432,12 @@ class ComputedBuffer(Buffer):
                 else None
                 for r in reads
             ]
-            priority_idx = []
-            for i, reads_buf in enumerate(reads_bufs):
-                if isinstance(reads_buf, Convolution):
-                    # prioritize Conv layout order
-                    priority_idx.append(i)
+            layout_priorities = [
+                reads_buf.layout_priority if reads_buf is not None else 0
+                for reads_buf in reads_bufs
+            ]
+            # propogate layout priority
+            self.layout_priority = max(layout_priorities + [self.layout_priority])
             # only consider reads to buffer of same size
             reads = [
                 r.index.subs({v: sympy.Integer(0) for v in reduction_vars})
@@ -1450,7 +1452,7 @@ class ComputedBuffer(Buffer):
                 from .scheduler import pick_loop_order
 
                 self.freeze_layout_with_fill_order(
-                    pick_loop_order(stride_lengths, self.get_size(), priority_idx)
+                    pick_loop_order(stride_lengths, self.get_size(), layout_priorities)
                 )
 
         if isinstance(self.layout, FlexibleLayout):
@@ -1478,21 +1480,18 @@ class ComputedBuffer(Buffer):
             )
         index_formulas = [*body.indexing_exprs.values()]
         memory_addrs = [*body.reads_name2expr.values(), *body.writes_name2expr.values()]
-        priority_idx = []
-        if config.triton.convolution != "aten":
-            reads_bufs = [
-                V.graph.name_to_buffer[reads_name]
-                if reads_name in V.graph.name_to_buffer.keys()
-                else None
-                for reads_name in body.reads_name2expr.keys()
-            ]
-            for i, reads_buf in enumerate(reads_bufs):
-                if isinstance(reads_buf, Convolution):
-                    # [ 3, 0, 2, 1] to [ 1, 3, 2, 0]
-                    # preferred_stride_order = reads_buf.preferred_stride_order
-                    # preferred_order = stride_order2fill_order(preferred_stride_order)
-                    priority_idx.append(i)
-
+        reads_bufs = [
+            V.graph.name_to_buffer[reads_name]
+            if reads_name in V.graph.name_to_buffer.keys()
+            else None
+            for reads_name in body.reads_name2expr.keys()
+        ]
+        layout_priorities = [
+            reads_buf.layout_priority if reads_buf is not None else 0
+            for reads_buf in reads_bufs
+        ]
+        # propogate layout priority
+        self.layout_priority = max(layout_priorities + [self.layout_priority])
         index_vars = []
         reduce_vars = []
         index_size = []
@@ -1509,7 +1508,7 @@ class ComputedBuffer(Buffer):
 
         def simplify_and_reorder(x_vars, sizes):
             sizes, reindex0, reindex1 = self._apply_loop_reordering(
-                x_vars, sizes, memory_addrs, priority_idx
+                x_vars, sizes, memory_addrs, layout_priorities
             )
             x_vars = reindex0(x_vars)
             sizes, reindex2, prune = _simplify_loops(x_vars, sizes, index_formulas)
@@ -1649,7 +1648,7 @@ class ComputedBuffer(Buffer):
             return (iter_ranges,), body
 
     @staticmethod
-    def _apply_loop_reordering(index_vars, sizes, memory_addrs, priority_idx=[]):
+    def _apply_loop_reordering(index_vars, sizes, memory_addrs, layout_priorities):
         """
         Shuffle the order of loops around to hopefully improve performance.
         """
@@ -1664,7 +1663,7 @@ class ComputedBuffer(Buffer):
                 dtype=numpy.int64,
             )
             assert strides.shape == (len(memory_addrs), len(index_vars))
-            order = list(reversed(pick_loop_order(strides, sizes, priority_idx)))
+            order = list(reversed(pick_loop_order(strides, sizes, layout_priorities)))
         except Exception:
             if config.debug:
                 log.warning(
@@ -1983,8 +1982,10 @@ class ExternKernelAlloc(ExternKernel):
         if isinstance(self.layout, Layout):
             self.codegen_size_asserts(wrapper)
 
-    def __init__(self, layout, inputs, constant_args=()):
-        super().__init__(None, layout, self.unwrap_storage(inputs), constant_args)
+    def __init__(self, layout, inputs, constant_args=(), layout_priority=0):
+        super().__init__(
+            None, layout, self.unwrap_storage(inputs), constant_args, layout_priority
+        )
         self.name = V.graph.register_buffer(self)
 
     def should_allocate(self):
@@ -2343,9 +2344,17 @@ class Convolution(ExternKernelAlloc):
         assert config_conv == "autotune"
         kernel = "tuned_conv"
 
-    def __init__(self, layout, inputs, constant_args=(), preferred_stride_order=None):
+    def __init__(
+        self,
+        layout,
+        inputs,
+        constant_args=(),
+        preferred_stride_order=None,
+        layout_priority=0,
+    ):
         super().__init__(layout, inputs, constant_args)
         self.preferred_stride_order = preferred_stride_order
+        self.layout_priority = layout_priority
 
     def codegen(self, wrapper):
         if self.kernel == "triton_ops_conv":
@@ -2450,12 +2459,14 @@ class Convolution(ExternKernelAlloc):
                 V.graph.sizevars.guard_static_shape(output_size[-1])
             )
 
+        layout_priority = 0
         # for conv2d or conv3d, prefer channels last format
         if (
             len(kernel_size) > 1
             and is_triton(x.get_device())
             and config.triton.convolution != "aten"
         ):
+            layout_priority = 10
             stride_order = [0] + list(reversed(range(1, len(kernel_size) + 1)))
             if len(stride_order) < len(output_size):
                 # add batch dim if it exists
@@ -2477,6 +2488,7 @@ class Convolution(ExternKernelAlloc):
                 (x, weight, bias),
                 (stride, padding, dilation, transposed, output_padding, groups),
                 stride_order,
+                layout_priority=layout_priority,
             )
         else:
             return Convolution(
@@ -2484,6 +2496,7 @@ class Convolution(ExternKernelAlloc):
                 (x, weight),
                 (bias, stride, padding, dilation, transposed, output_padding, groups),
                 stride_order,
+                layout_priority=layout_priority,
             )
 
     def apply_constraint(self):

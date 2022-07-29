@@ -200,7 +200,7 @@ class NopKernelSchedulerNode(BaseSchedulerNode):
         return 200
 
 
-def pick_loop_order(stride_lengths, sizes, priority_idx=[]):
+def pick_loop_order(stride_lengths, sizes, priorities):
     """
     A heuristic to decide loop iteration orders.  This has not been well
     tuned and may be something we should autotune.
@@ -228,10 +228,10 @@ def pick_loop_order(stride_lengths, sizes, priority_idx=[]):
         return cmp(b, a)
 
     order = list(reversed(range(stride_lengths.shape[1])))
-    if len(priority_idx) > 0:
-        # if we have priority node, only use that node's order
-        stride_lengths = stride_lengths[priority_idx]
     if config.pick_loop_orders:
+        # only order based on highest priority layouts
+        idx = np.argwhere(priorities == np.max(priorities)).flatten().tolist()
+        stride_lengths = stride_lengths[idx]
         order.sort(key=index_cmp)
     return order
 

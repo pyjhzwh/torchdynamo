@@ -303,7 +303,7 @@ class _conv:
     # for the contigous order of w ptr, what"s the corresponding
     # ptr changes for x in a sliding window
     @staticmethod
-    def _delta_x_ptr(
+    def _delta_x_ptr_hwc(
         IN_C,
         KERNEL_H,
         KERNEL_W,
@@ -339,6 +339,39 @@ class _conv:
             r_dilation_w,
             r_inc,
         )
+
+    @staticmethod
+    def _delta_x_ptr(
+        IN_C,
+        KERNEL_H,
+        KERNEL_W,
+        dilation_h,
+        dilation_w,
+        stride_wc,
+        stride_wh,
+        stride_ww,
+        stride_xc,
+        stride_xh,
+        stride_xw,
+        device,
+    ):
+        # get the order of axes in w, innermost dimension outward
+        stride_w_3d = [stride_wc, stride_wh, stride_ww]
+        order = sorted(range(len(stride_w_3d)), key=stride_w_3d.__getitem__)
+        window_size = IN_C * KERNEL_H * KERNEL_W
+
+        r_window = torch.arange(0, window_size, 1, device=device)
+        window_unpack = _unpack(r_window, order, [IN_C, KERNEL_H, KERNEL_W])
+        window_unpack_c = window_unpack[order[0]]
+        window_unpack_h = window_unpack[order[1]]
+        window_unpack_w = window_unpack[order[2]]
+        r_dilation_h = dilation_h * window_unpack_h
+        r_dilation_w = dilation_w * window_unpack_w
+        r_inc = window_unpack_c
+        delta_x = (
+            r_dilation_h * stride_xh + r_dilation_w * stride_xw + r_inc * stride_xc
+        )
+        return delta_x
 
     @staticmethod
     def _call(
@@ -447,7 +480,7 @@ class _conv:
         if stride_x[xc] == 1 and KERNEL_H == 1 and KERNEL_W == 1:
             CONV1X1_NHWC = True
         if not CONV1X1_NHWC:
-            delta_xh, delta_xw, delta_xc = _conv._delta_x_ptr(
+            delta_xh, delta_xw, delta_xc = _conv._delta_x_ptr_hwc(
                 IN_C,
                 KERNEL_H,
                 KERNEL_W,
