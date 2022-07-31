@@ -306,7 +306,6 @@ class RangeTree:
                 V.kernel.range_tree_nodes[node.symbol()] = node
                 self.var_list.append(node.symbol())
                 self.var_ranges[node.symbol()] = length
-                new_node = node
             else:
                 new_node = RangeTreeEntryAlias(
                     f"{self.prefix}{next(V.kernel.iter_vars_count)}",
@@ -315,16 +314,16 @@ class RangeTree:
                     aliased_entries,
                     expr,
                 )
+                # inheriet children from existing node
+                new_node.children = node.children
                 self.children[length] = new_node
                 V.kernel.range_tree_nodes[new_node.symbol()] = new_node
                 self.var_list.append(new_node.symbol())
                 self.var_ranges[new_node.symbol()] = length
-                # Note: return the node in original RangeTree
-                # since new_node only codegen aliased expression
+                node = new_node
         else:
             node = self.children[length]
-            new_node = node
-        return node, new_node
+        return node
 
 
 class RangeTreeRoot(RangeTree):
@@ -348,11 +347,11 @@ class RangeTreeRoot(RangeTree):
         return expr
 
     def construct(self, lengths):
-        next_node = self
+        node = self
         itervars = []
         for sv in reversed(lengths):
-            next_node, new_node = next_node.child_node_split(sv)
-            itervars.append(new_node.symbol())
+            node = node.child_node_split(sv)
+            itervars.append(node.symbol())
         return list(reversed(itervars))
 
     def ranges_code(self):
