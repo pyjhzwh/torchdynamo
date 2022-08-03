@@ -122,15 +122,17 @@ class RecordLoadStore(V.MockHandler):
         # convert it to the simpliest form because of the interference from
         # different indexing formulas.
         index_vars = list(self._var_ranges.keys())
-        # new_sizes, reindex, prune = _simplify_loops(index_vars, sizes, [index])
+        new_sizes, reindex, prune = _simplify_loops(
+            index_vars, sizes, [index], preserver_reoredering=True
+        )
 
         # assign new variables each dimension to deal with numbering mismatches
         # d0, d1, d2 could become d0, d2 -- which won't match d0, d1
         _, add_var = var_builder(canonicalization_prefix())
-        replacement = dict(zip(index_vars, [add_var(x) for x in sizes]))
+        replacement = dict(zip(index_vars, reindex([add_var(x) for x in new_sizes])))
 
         index = sympy.expand(index).subs(replacement)
-        return index, tuple(sizes)
+        return index, tuple(new_sizes)
 
     def load(self, name: str, index: sympy.Expr, upcast: bool = False):
         canonicalized_index, canonicalized_size = self.canonicalize(index)
