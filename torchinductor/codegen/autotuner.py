@@ -184,60 +184,32 @@ def tuned_mm(
         kernel = kernels[0]
         return kernel
     timings = {}
-    device="cuda"
-    dtype=torch.float32
-    a_shape, b_shape = [2048, 768], [768, 768]
-    a_stride, b_stride = [768, 1], [1, 768]
-    a = rand_strided(a_shape, a_stride, device=device, dtype=dtype)
-    b = rand_strided(b_shape, b_stride, device=device, dtype=dtype)
-    c = torch.empty_strided((a_shape[0], b_shape[1]), (b_shape[1],1), device=device, dtype=dtype)
-    runnable_kernel = torchinductor.triton_ops.matmul_out
-    run_args = (a, b, c)
-    run_kwargs = {}
-    timing, _, _ = triton.testing.do_bench(lambda: runnable_kernel(*run_args, **run_kwargs))
-    print("triton", timing)
-    runnable_kernel = torch.ops.aten.mm.out
-    run_args = (a, b)
-    run_kwargs = {"out": c}
-    timing, _, _ = triton.testing.do_bench(lambda: runnable_kernel(*run_args, **run_kwargs))
-    print("aten", timing)
-    exit()
-
-    # if key not in autotune.cache:
-    #     # bench_start = time.time()
-    #     for kernel in kernels:
-    #         runnable_kernel = str2func(kernel)
-    #         if "triton_ops" in kernel:
-    #             run_args = (a, b, c)
-    #             run_kwargs = {}
-    #             inner_kernel = str2func(
-    #                 kernel.replace("matmul_out", "_matmul_out") + ".kernel"
-    #             )
-    #             # inner_kernel.kernel_decorators = []
-    #             # fix SPLIT_K = 1 for fusable kernels
-    #             # mm_heuristics()(mm_autotune(get_io_bound_configs=False)(inner_kernel))
-    #             # print(inner_kernel.kernel_decorators)
-    #         else:
-    #             run_args = (a, b)
-    #             run_kwargs = {"out": c}
-    #         # print(runnable_kernel.__name__, a.shape, b.shape, c.shape, a.stride(), b.stride(), c.stride())
-    #         # breakpoint()
-    #         # from torch.utils.benchmark import Timer
-    #         # env = {"args": run_args, "kwargs": run_kwargs, "fn": runnable_kernel}
-    #         # fn_call = "fn(*args, **kwargs)"
-    #         # timer = Timer(stmt=f"{fn_call}", globals=env)
-    #         # timing = timer.timeit(100).mean * 1000
-    #         timing, _, _ = triton.testing.do_bench(lambda: runnable_kernel(*run_args, **run_kwargs))
-    #         # timing, _, _ = autotune._bench(runnable_kernel, *run_args, **run_kwargs)
-    #         if "triton_ops" in kernel:
-    #             timing = timing * adjust_triton
-    #         timings[kernel] = timing
-    #     # bench_end = time.time()
-    #     # bench_time = bench_end - bench_start
-    #     autotune.cache[key] = builtins.min(timings, key=timings.get)
-    #     if torchinductor.config.debug:
-    #         print("for key = ", key)
-    #         print("timing", timings)
-    #         print("best_kernel", autotune.cache[key])
-    # best_kernel = autotune.cache[key]
-    # return best_kernel
+    if key not in autotune.cache:
+        # bench_start = time.time()
+        for kernel in kernels:
+            runnable_kernel = str2func(kernel)
+            if "triton_ops" in kernel:
+                run_args = (a, b, c)
+                run_kwargs = {}
+                inner_kernel = str2func(
+                    kernel.replace("matmul_out", "_matmul_out") + ".kernel"
+                )
+                inner_kernel.kernel_decorators = []
+                # fix SPLIT_K = 1 for fusable kernels
+                mm_heuristics()(mm_autotune(get_io_bound_configs=False)(inner_kernel))
+            else:
+                run_args = (a, b)
+                run_kwargs = {"out": c}
+            timing, _, _ = autotune._bench(runnable_kernel, *run_args, **run_kwargs)
+            if "triton_ops" in kernel:
+                timing = timing * adjust_triton
+            timings[kernel] = timing
+        # bench_end = time.time()
+        # bench_time = bench_end - bench_start
+        autotune.cache[key] = builtins.min(timings, key=timings.get)
+        if torchinductor.config.debug:
+            print("for key = ", key)
+            print("timing", timings)
+            print("best_kernel", autotune.cache[key])
+    best_kernel = autotune.cache[key]
+    return best_kernel

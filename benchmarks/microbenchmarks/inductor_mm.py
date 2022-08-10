@@ -5,9 +5,6 @@ from benchmark_helper import time_with_torch_timer
 import torchdynamo
 import torchdynamo.config
 import torchinductor.config as config
-import torchinductor.triton_ops
-
-# config.debug = True
 
 
 @torchdynamo.optimize("inductor", nopython=True)
@@ -24,8 +21,8 @@ def torch_mm(a, b):
     return torch.mm(a, b)
 
 
-def triton_mm(a, b, c):
-    return torchinductor.triton_ops.matmul_out(a, b, c)
+def triton_mm(a, b):
+    return triton.ops.matmul(a, b)
 
 
 def test_total_time(shapes):
@@ -64,20 +61,18 @@ def test_GPU_time(shapes):
         print(a_shape, "x", b_shape, end="; ")
         a = torch.randn(a_shape, device="cuda", dtype=torch.float16)
         b = torch.randn(b_shape, device="cuda", dtype=a.dtype)
-        c = torch.randn((a_shape[0], b_shape[1]), device="cuda", dtype=a.dtype)
 
-        # config.triton.mm = "aten"
-        # inductor_aten_mm(a, b)
+        config.triton.mm = "aten"
+        inductor_aten_mm(a, b)
 
-        # config.triton.mm = "triton"
-        # inductor_triton_mm(a, b)
+        config.triton.mm = "triton"
+        inductor_triton_mm(a, b)
 
         torch_ms, _, _ = triton.testing.do_bench(lambda: torch_mm(a, b))
-        triton_ms, _, _ = triton.testing.do_bench(lambda: triton_mm(a, b, c))
-        # ind_aten_ms, _, _ = triton.testing.do_bench(lambda: inductor_aten_mm(a, b))
-        # ind_triton_ms, _, _ = triton.testing.do_bench(lambda: inductor_triton_mm(a, b))
-        # print(torch_ms, triton_ms, ind_aten_ms, ind_triton_ms, sep="; ")
-        print(torch_ms, triton_ms, sep="; ")
+        triton_ms, _, _ = triton.testing.do_bench(lambda: triton_mm(a, b))
+        ind_aten_ms, _, _ = triton.testing.do_bench(lambda: inductor_aten_mm(a, b))
+        ind_triton_ms, _, _ = triton.testing.do_bench(lambda: inductor_triton_mm(a, b))
+        print(torch_ms, triton_ms, ind_aten_ms, ind_triton_ms, sep="; ")
 
         torchdynamo.reset()
 
@@ -85,29 +80,21 @@ def test_GPU_time(shapes):
 if __name__ == "__main__":
     shapes = [
         # alexnet
-        # ([128, 9216], [9216, 4096]),
-        # ([128, 4096], [4096, 4096]),
-        # ([128, 4096], [4096, 1000]),
-        # # BERT
+        ([128, 9216], [9216, 4096]),
+        ([128, 4096], [4096, 4096]),
+        ([128, 4096], [4096, 1000]),
+        # BERT
         ([2048, 768], [768, 768]),
-        # ([2048, 768], [768, 3072]),
-        # ([2048, 3072], [3072, 768]),
-        # # hf_GPT2
-        # ([1024, 768], [768, 768]),
-        # ([1024, 768], [768, 3072]),
-        # ([1024, 3072], [3072, 768]),
-        # ([1024, 768], [768, 2304]),
-        # attention_is_all_you_need
-        # ([704, 512], [512, 512]),
-        # ([704, 512], [512, 2048]),
-        # ([704, 2048], [2048, 512]),
-        # ([672, 512], [512, 512]),
-        # ([672, 512], [512, 2048]),
-        # ([672, 2048], [2048, 512]),
-        # ([672, 512], [512, 9512]),
+        ([2048, 768], [768, 3072]),
+        ([2048, 3072], [3072, 768]),
+        # hf_GPT2
+        ([1024, 768], [768, 768]),
+        ([1024, 768], [768, 3072]),
+        ([1024, 3072], [3072, 768]),
+        ([1024, 768], [768, 2304]),
     ]
-    # print("test total time")
-    # test_total_time(shapes)
+    print("test total time")
+    test_total_time(shapes)
 
     print("test GPU time")
     test_GPU_time(shapes)
