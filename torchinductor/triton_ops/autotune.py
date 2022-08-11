@@ -245,7 +245,7 @@ def reduction_heuristics(size_hints):
 def get_list_block(start_val, num, min_val):
     x = max(start_val, min_val)
     res = [x]
-    for _ in range(num):
+    for _ in range(num - 1):
         x = x // 2
         if x < min_val:
             return res
@@ -257,32 +257,34 @@ def get_list_block(start_val, num, min_val):
 def conv_heuristics(size_hints=None):
     # BLOCK_M, BLOCK_N, BLOCK_K hints
     BLOCK_start = [256, 128, 64]
-    BLOCK_max = [256, 256, 128]
-    BLOCK_min = [32, 32, 32]
+    BLOCK_max = [256, 128, 64]
+    BLOCK_min = [16, 16, 16]
     if size_hints:
         assert len(size_hints) == 3
-        for i in enumerate(size_hints):
+        for i in range(len(size_hints)):
             if size_hints[i]:
                 BLOCK_start[i] = max(
                     min(next_power_of_2(size_hints[i]), BLOCK_max[i]), BLOCK_min[i]
                 )
     # candidate BLOCK sizes list
-    BLOCK_M_list = get_list_block(BLOCK_start[0], 2, 32)
-    BLOCK_N_list = get_list_block(BLOCK_start[1], 2, 32)
-    BLOCK_K_list = get_list_block(BLOCK_start[2], 2, 32)
+    BLOCK_M_list = get_list_block(BLOCK_start[0], 2, BLOCK_min[0])
+    BLOCK_N_list = get_list_block(BLOCK_start[1], 2, BLOCK_min[1])
+    BLOCK_K_list = get_list_block(BLOCK_start[2], 2, BLOCK_min[2])
     configs = []
     for BLOCK_M, BLOCK_N, BLOCK_K in itertools.product(
         BLOCK_M_list, BLOCK_N_list, BLOCK_K_list
     ):
-        if conditional_product(BLOCK_M, BLOCK_N, BLOCK_K) > 256 * 128 * 64:
+        if conditional_product(BLOCK_M, BLOCK_N, BLOCK_K) > 256 * 64 * 64:
             continue
         config_dict = {"BLOCK_M": BLOCK_M, "BLOCK_N": BLOCK_N, "BLOCK_K": BLOCK_K}
         num_warps = next_power_of_2(
             min(max(conditional_product(BLOCK_M, BLOCK_N, BLOCK_K) // 65536, 1), 8)
         )
-        num_stages = 8 // num_warps
-        configs.apeend(Config(config_dict, num_warps=num_warps, num_stages=num_stages))
-
+        if conditional_product(BLOCK_M, BLOCK_N, BLOCK_K) > 128 * 64 * 32:
+            num_stages = 16 // num_warps
+        else:
+            num_stages = 8 // num_warps
+        configs.append(Config(config_dict, num_warps=num_warps, num_stages=num_stages))
     # configs = [
     #     triton.Config(
     #         {"BLOCK_M": 128, "BLOCK_N": 128, "BLOCK_K": 32}, num_stages=2, num_warps=8

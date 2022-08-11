@@ -54,11 +54,11 @@ class TritonTemplateKernel(TritonKernel):
 
     def rename_vars(self):
         for k, v in self.inout_dict.items():
-            self.args.output_buffers[v] = k
+            self.args.output_buffers[str(v)] = k
         if isinstance(self.node, ir.Convolution):
-            self.cse.store_cache[self.inout_dict["y"]] = "acc"
+            self.cse.store_cache[str(self.inout_dict["y"])] = "acc"
         elif isinstance(self.node, ir.MatrixMultiply):
-            self.cse.store_cache[self.inout_dict["C"]] = "acc"
+            self.cse.store_cache[str(self.inout_dict["C"])] = "acc"
 
     def assign_block_numel(self):
         code = IndentedBuffer()
@@ -145,7 +145,7 @@ class TritonTemplateKernel(TritonKernel):
         code = IndentedBuffer()
 
         if isinstance(self.node, ir.Convolution):
-            heuristics = "conv_heuristics"
+            autotune = "conv_heuristics"
             BATCH = self.args_dict["BATCH"]
             OUT_H = self.args_dict["OUT_H"]
             OUT_W = self.args_dict["OUT_W"]
@@ -153,14 +153,41 @@ class TritonTemplateKernel(TritonKernel):
             KERNEL_H = self.args_dict["KERNEL_H"]
             KERNEL_W = self.args_dict["KERNEL_W"]
             IN_C = self.args_dict["IN_C"]
-            m_hint = conditional_product(map(size_hint, [BATCH, OUT_H, OUT_W]))
-            n_hint = size_hint(KERNEL_N)
-            k_hint = conditional_product(map(size_hint, [KERNEL_H, KERNEL_W, IN_C]))
+            try:
+                m_hint = conditional_product(*list(map(size_hint, [BATCH, OUT_H, OUT_W])))
+            except RuntimeError:
+                m_hint = None
+            try:
+                n_hint = size_hint(KERNEL_N)
+            except RuntimeError:
+                n_hint = None
+            try:
+                k_hint = conditional_product(*list(map(size_hint, [KERNEL_H, KERNEL_W, IN_C])))
+            except RuntimeError:
+                k_hint = None
             size_hints = [m_hint, n_hint, k_hint]
 
             code.splice(
                 f"""
-                    @{heuristics}(size_hints={size_hints!r})
+                    @{autotune}(size_hints={size_hints!r})
+                    @triton.jit
+                """
+            )
+        elif isinstance(self.node, ir.MatrixMultiply):
+            heuristics = "mm_heuristics"
+            autotune = "mm_autotune"
+            m_hint = size_hint(self.args_dict["M"])
+            n_hint = size_hint(self.args_dict["N"])
+            k_hint = size_hint(self.args_dict["K"])
+            size_hints = [m_hint, n_hint, k_hint]
+
+            # if no fuse, we could use SPLIT_K>1 configs
+            get_io_bound_configs = not fuse
+
+            code.splice(
+                f"""
+                    @{heuristics}
+                    @{autotune}(size_hints={size_hints!r}, get_io_bound_configs={get_io_bound_configs})
                     @triton.jit
                 """
             )
@@ -287,7 +314,7 @@ class TritonTemplateKernel(TritonKernel):
         #     return (...)
         # kernel1[grid](arg0, arg1, ...)
         extra_args = ", ".join(self.extra_call_args)
-        self_args = ", ".join({**self.inout_dict, **self.args_dict}.values())
+        self_args = ", ".join(map(str,{**self.inout_dict, **self.args_dict}.values()))
         self_const_kwargs = ", ".join(f"{k}={v}" for k, v in self.const_dict.items())
         args = self_args + (
             ", " + extra_args if extra_args and len(extra_args) > 0 else ""
