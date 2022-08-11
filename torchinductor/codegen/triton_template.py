@@ -5,6 +5,8 @@ from jinja2 import Environment
 from jinja2 import FileSystemLoader
 from jinja2 import StrictUndefined
 
+from torchinductor.utils import conditional_product
+
 from .. import ir
 from ..virtualized import V
 from .common import IndentedBuffer
@@ -141,8 +143,29 @@ class TritonTemplateKernel(TritonKernel):
         could_remove_kernel_buf=False,
         kernel_buf_replace_name=None,
     ):
-
+        size_hint = V.graph.sizevars.size_hint
         code = IndentedBuffer()
+
+        if isinstance(self.node, ir.Convolution):
+            heuristics = "conv_heuristics"
+            BATCH = self.args_dict["BATCH"]
+            OUT_H = self.args_dict["OUT_H"]
+            OUT_W = self.args_dict["OUT_W"]
+            KERNEL_N = self.args_dict["KERNEL_N"]
+            KERNEL_H = self.args_dict["KERNEL_H"]
+            KERNEL_W = self.args_dict["KERNEL_W"]
+            IN_C = self.args_dict["IN_C"]
+            m_hint = conditional_product(map(size_hint, [BATCH, OUT_H, OUT_W]))
+            n_hint = size_hint(KERNEL_N)
+            k_hint = conditional_product(map(size_hint, [KERNEL_H, KERNEL_W, IN_C]))
+            size_hints = [m_hint, n_hint, k_hint]
+
+            code.splice(
+                f"""
+                    @{heuristics}(size_hints={size_hints!r})
+                    @triton.jit
+                """
+            )
 
         self.codegen_body(name, fuse, could_remove_kernel_buf, kernel_buf_replace_name)
         code.splice(self.body)

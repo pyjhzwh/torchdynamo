@@ -251,29 +251,32 @@ def get_list_block(start_val, num, min_val):
     return res
 
 
-def conv_heuristics(m_hints=None, n_hints=None, k_hints=None):
-    BLOCK_M_max = 256
-    BLOCK_N_max = 128
-    BLOCK_K_max = 64
-    if m_hints is not None:
-        BLOCK_M_max = max(min(next_power_of_2(m_hints), 256), 32)
-    if n_hints is not None:
-        BLOCK_N_max = max(min(next_power_of_2(n_hints), 256), 32)
-    if k_hints is not None:
-        BLOCK_K_max = max(min(next_power_of_2(k_hints), 128), 32)
-    BLOCK_M_list = get_list_block(BLOCK_M_max, 2, 32)
-    BLOCK_N_list = get_list_block(BLOCK_N_max, 2, 32)
-    BLOCK_K_list = get_list_block(BLOCK_K_max, 2, 32)
+def conv_heuristics(size_hints=None):
+    # BLOCK_M, BLOCK_N, BLOCK_K hints
+    BLOCK_start = [256, 128, 64]
+    BLOCK_max = [256, 256, 128]
+    BLOCK_min = [32, 32, 32]
+    if size_hints:
+        assert len(size_hints) == 3
+        for i in enumerate(size_hints):
+            if size_hints[i]:
+                BLOCK_start[i] = max(
+                    min(next_power_of_2(size_hints[i]), BLOCK_max[i]), BLOCK_min[i]
+                )
+    # candidate BLOCK sizes list
+    BLOCK_M_list = get_list_block(BLOCK_start[0], 2, 32)
+    BLOCK_N_list = get_list_block(BLOCK_start[1], 2, 32)
+    BLOCK_K_list = get_list_block(BLOCK_start[2], 2, 32)
     configs = []
     for BLOCK_M, BLOCK_N, BLOCK_K in itertools.product(
         BLOCK_M_list, BLOCK_N_list, BLOCK_K_list
     ):
         if conditional_product(BLOCK_M, BLOCK_N, BLOCK_K) > 256 * 128 * 64:
             continue
-        config_dict = {
-            "BLOCK_M": BLOCK_M, "BLOCK_N": BLOCK_N, "BLOCK_K": BLOCK_K
-        }
-        num_warps = next_power_of_2(min(max(conditional_product(BLOCK_M, BLOCK_N, BLOCK_K) // 65536, 1), 8))
+        config_dict = {"BLOCK_M": BLOCK_M, "BLOCK_N": BLOCK_N, "BLOCK_K": BLOCK_K}
+        num_warps = next_power_of_2(
+            min(max(conditional_product(BLOCK_M, BLOCK_N, BLOCK_K) // 65536, 1), 8)
+        )
         num_stages = 8 // num_warps
         configs.apeend(Config(config_dict, num_warps=num_warps, num_stages=num_stages))
 
