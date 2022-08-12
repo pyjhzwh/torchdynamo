@@ -1128,7 +1128,8 @@ class Scheduler:
         nodes = [True]
         while nodes:
             nodes = list(self.unordered_pop_group(group_without_device))
-            nodes.sort(key=lambda x: x.get_name())
+            # compare buffer num rather than string
+            nodes.sort(key=lambda x: int(x.get_name().replace("buf", "")))
             yield from nodes
 
     def pop_groups(self, groups):
