@@ -1130,7 +1130,13 @@ class Scheduler:
             nodes = list(self.unordered_pop_group(group_without_device))
             # compare buffer num rather than string
             nodes.sort(key=lambda x: int(x.get_name().replace("buf", "")))
-            yield from nodes
+            for node in nodes:
+                # FusedSchedulerNode pop_fusable does not check dependency, check it here
+                if len(node.unmet_dependencies) == 0:
+                    yield node
+                else:
+                    self.blocked_nodes.add(node)
+            # yield from nodes
 
     def pop_groups(self, groups):
         keep_going = True
