@@ -68,7 +68,7 @@ def estimate_conv_time(
     # assume 80% of (following) loads are in L2 cache
     # convolution have overlap!!
     load_a_dram = IN_SIZE * dtsize * (1 + 0.2 * (num_cta_n - 1))
-    load_a_l2 =  IN_SIZE * dtsize * 0.8 * (num_cta_n - 1)
+    load_a_l2 = IN_SIZE * dtsize * 0.8 * (num_cta_n - 1)
     load_b_dram = N * K * dtsize * (1 + 0.2 * (num_cta_m - 1))
     load_b_l2 = N * K * dtsize * 0.8 * (num_cta_m - 1)
     # total

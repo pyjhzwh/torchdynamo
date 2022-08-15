@@ -154,7 +154,9 @@ class TritonTemplateKernel(TritonKernel):
             KERNEL_W = self.args_dict["KERNEL_W"]
             IN_C = self.args_dict["IN_C"]
             try:
-                m_hint = conditional_product(*list(map(size_hint, [BATCH, OUT_H, OUT_W])))
+                m_hint = conditional_product(
+                    *list(map(size_hint, [BATCH, OUT_H, OUT_W]))
+                )
             except RuntimeError:
                 m_hint = None
             try:
@@ -162,7 +164,9 @@ class TritonTemplateKernel(TritonKernel):
             except RuntimeError:
                 n_hint = None
             try:
-                k_hint = conditional_product(*list(map(size_hint, [KERNEL_H, KERNEL_W, IN_C])))
+                k_hint = conditional_product(
+                    *list(map(size_hint, [KERNEL_H, KERNEL_W, IN_C]))
+                )
             except RuntimeError:
                 k_hint = None
             size_hints = [m_hint, n_hint, k_hint]
@@ -314,7 +318,7 @@ class TritonTemplateKernel(TritonKernel):
         #     return (...)
         # kernel1[grid](arg0, arg1, ...)
         extra_args = ", ".join(self.extra_call_args)
-        self_args = ", ".join(map(str,{**self.inout_dict, **self.args_dict}.values()))
+        self_args = ", ".join(map(str, {**self.inout_dict, **self.args_dict}.values()))
         self_const_kwargs = ", ".join(f"{k}={v}" for k, v in self.const_dict.items())
         args = self_args + (
             ", " + extra_args if extra_args and len(extra_args) > 0 else ""

@@ -2849,9 +2849,7 @@ class Convolution(ExternKernelAlloc):
                 ("stride_yw", self.get_stride()[3]),
                 (
                     "stride_biasn",
-                    self.inputs[0].get_stride()[0]
-                    if len(in_args) >= 3
-                    else "None",
+                    self.inputs[0].get_stride()[0] if len(in_args) >= 3 else "None",
                 ),
                 # ("delta_x_ptr", "None"),
                 ("BATCH", self.inputs[0].get_size()[0]),
