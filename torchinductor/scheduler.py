@@ -503,6 +503,7 @@ class BlockedNodes:
 
     def pop_fusable(self, deps, group):
         assert isinstance(deps, set)
+        unpacked_something = False
         result = []
         for dep in deps:
             self.dep_to_nodes[dep] = [x for x in self.dep_to_nodes[dep] if x]
@@ -519,10 +520,12 @@ class BlockedNodes:
                                 result.append(x)
                             else:
                                 self.add(x)
-                        # in case there are dependencies inside pre fused nodes
-                        result.extend(self.pop_fusable(deps, group))
+                            unpacked_something = True
                     else:
                         result.append(out)
+        if unpacked_something:
+            # in case there are dependencies inside pre fused nodes
+            result.extend(self.pop_fusable(deps, group))
         return result
 
 
@@ -560,6 +563,8 @@ def draw_buffers(nodes, fname, print_graph=False):
         if "fusion_meta" not in node.meta:
             continue
         group = node.meta["fusion_meta"].group
+        if isinstance(group, tuple):
+            group = group[1]
 
         # gather meta data
         dtype = None
@@ -638,10 +643,10 @@ def create_fx_from_snodes(snodes: List[BaseSchedulerNode]) -> fx.Graph:
             group = node_type
         elif isinstance(snode, SchedulerNode):
             node_type = "compute"
-            group = snode.group[1]
+            group = snode.group
         elif isinstance(snode, FusedSchedulerNode):
             node_type = "fused"
-            group = snode.group[1]
+            group = snode.group
         else:
             raise RuntimeError("Unknown node type")
         node_func = func_dict[node_type]
@@ -1020,7 +1025,11 @@ class Scheduler:
         # If all the uses of this buffer are also in self.pending_buffer_names,
         # it means the buffer becomes kernel-local after fusion
         for name in self.pending_buffer_names:
-            if name in V.kernel.must_keep_buffers:
+            if (
+                name in V.kernel.must_keep_buffers
+                or name in V.kernel.args.input_buffers
+                or name in self.mutation_renames
+            ):
                 continue
             node = self.name_to_node[name]
             is_live = any(

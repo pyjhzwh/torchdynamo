@@ -19,6 +19,7 @@ import torch.fx
 import torch.utils._pytree as pytree
 from sympy import Expr
 from sympy import Integer
+from torch._prims_common import is_float_dtype
 
 from . import config
 from . import dependencies
@@ -197,9 +198,13 @@ class CleanDiv(IndexingDiv):
     pass
 
 
-def is_triton(device):
+def is_triton(x):
     # TODO(jansel): a config check once we have multi-backend
-    return device.type == "cuda"
+    if getattr(x, "get_device", None):
+        return is_triton(x.get_device())
+    if isinstance(x, torch.device):
+        return x.type == "cuda"
+    return False
 
 
 @dataclasses.dataclass
@@ -354,6 +359,8 @@ class Scatter(Pointwise):
 class Reduction(Loops):
     reduction_ranges: List[Expr]
     reduction_type: str
+    # self.dtype represents the dst dtype
+    src_dtype: torch.dtype
 
     def __str__(self):
         return Loops.__str__(
@@ -372,6 +379,7 @@ class Reduction(Loops):
         return ops.reduction(
             output_name,
             self.dtype,
+            self.src_dtype,
             self.reduction_type,
             indexer(vars),
             self.inner_fn(vars, reduction_vars),
@@ -402,12 +410,14 @@ class Reduction(Loops):
             self.ranges,
             self.reduction_ranges,
             self.reduction_type,
+            self.src_dtype,
         )
 
     @staticmethod
     def num_splits(
         device,
-        dtype,
+        dst_dtype,
+        src_dtype,
         inner_fn,
         ranges,
         reduction_ranges,
@@ -505,11 +515,12 @@ class Reduction(Loops):
 
         r = Reduction(
             device,
-            dtype,
+            dst_dtype,
             inner_fn,
             ranges,
             reduction_ranges,
             reduction_type,
+            src_dtype,
         )
         read_writes = ComputedBuffer(
             name=None,
@@ -551,7 +562,8 @@ class Reduction(Loops):
     def create(
         cls,
         device: torch.device,
-        dtype: torch.dtype,
+        dst_dtype: torch.dtype,
+        src_dtype: torch.dtype,
         inner_fn: Callable,
         ranges: List[Expr],
         reduction_ranges: List[Expr],
@@ -564,13 +576,14 @@ class Reduction(Loops):
                 reduction_index = [sympy.Integer(0) for _ in reduction_ranges]
                 return inner_fn(index, reduction_index)
 
-            return Pointwise.create(device, dtype, fn, ranges)
+            return Pointwise.create(device, dst_dtype, fn, ranges)
 
         if is_triton(device) and reduction_type not in {"argmax", "argmin"}:
             # triton doesn't support reduce to single element well, so break it up
             split = cls.num_splits(
                 device,
-                dtype,
+                dst_dtype,
+                src_dtype,
                 inner_fn,
                 ranges,
                 reduction_ranges,
@@ -581,7 +594,8 @@ class Reduction(Loops):
                 # triton doesn't support reduce to single element well, so break it up
                 return cls.create_multilayer(
                     device,
-                    dtype,
+                    dst_dtype,
+                    src_dtype,
                     inner_fn,
                     ranges,
                     reduction_ranges,
@@ -592,30 +606,32 @@ class Reduction(Loops):
         return TensorBox.create(
             Reduction(
                 device,
-                dtype,
+                dst_dtype,
                 inner_fn,
                 ranges,
                 reduction_ranges,
                 reduction_type,
+                src_dtype,
             )
         )
 
     @staticmethod
     def default_value(reduction_type, dtype):
+        if reduction_type in {"max", "argmax"}:
+            return float("-inf") if is_float_dtype(dtype) else -(2**31)
+        if reduction_type in {"min", "argmin"}:
+            return float("inf") if is_float_dtype(dtype) else 2**31 - 1
         return {
             "sum": 0,
-            "max": float("-inf"),
-            "min": float("inf"),
             "any": 0,
-            "argmax": float("-inf"),
-            "argmin": float("inf"),
         }[reduction_type]
 
     @classmethod
     def create_multilayer(
         cls,
         device: torch.device,
-        dtype: torch.dtype,
+        dst_dtype: torch.dtype,
+        src_dtype: torch.dtype,
         inner_fn: Callable,
         ranges: List[Expr],
         reduction_ranges: List[Expr],
@@ -661,7 +677,9 @@ class Reduction(Loops):
                     ops.index_expr(indices, torch.int32),
                     ops.index_expr(reduction_numel, torch.int32),
                 )
-                return ops.masked(mask, body, cls.default_value(reduction_type, dtype))
+                return ops.masked(
+                    mask, body, cls.default_value(reduction_type, dst_dtype)
+                )
             else:
                 return body()
 
@@ -669,11 +687,14 @@ class Reduction(Loops):
         # within the kernel. keep the intermediate in fp32 so as to keep the whole reduction
         # in fp32 and not reduce precision by breaking up the kernel into multiple layers
         intermediate_dtype = (
-            dtype if dtype not in (torch.float16, torch.bfloat16) else torch.float
+            dst_dtype
+            if dst_dtype not in (torch.float16, torch.bfloat16)
+            else torch.float
         )
         intermediate = Reduction.create(
             device,
             intermediate_dtype,
+            src_dtype,
             wrapper_fn,
             [*ranges, split],
             [block_size],
@@ -688,11 +709,12 @@ class Reduction(Loops):
         return TensorBox.create(
             Reduction(
                 device,
-                dtype,
+                dst_dtype,
                 intermediate_fn,
                 ranges,
                 [split],
                 reduction_type,
+                src_dtype,
             )
         )
 
@@ -2760,7 +2782,6 @@ class Convolution(ExternKernelAlloc):
             assert config_conv == "autotune"
             from .codegen.autotuner import tuned_conv
 
-            # kernel = "tuned_conv"
             kernel = tuned_conv(
                 x.get_size(),
                 weight.get_size(),
@@ -2778,11 +2799,31 @@ class Convolution(ExternKernelAlloc):
 
         # for conv2d or conv3d, prefer channels last format
         if kernel == "triton_ops.conv":
+            output_layout = "torch.channels_last"
+        elif config.tune_layout:
+            from .codegen.autotuner import tuned_conv_layout
+
+            output_layout = tuned_conv_layout(
+                kernel,
+                x.get_size(),
+                weight.get_size(),
+                stride,
+                padding,
+                dilation,
+                transposed,
+                output_padding,
+                groups,
+                x.get_device(),
+                x.get_dtype(),
+            )
+        else:
+            output_layout = "torch.contiguous_format"
+
+        if output_layout == "torch.channels_last":
             stride_order = [0] + list(reversed(range(1, len(kernel_size) + 1)))
             if len(stride_order) < len(output_size):
                 # add batch dim if it exists
                 stride_order = [len(stride_order)] + stride_order
-        # for conv1d, output layout is not preserved with inputs
         else:
             stride_order = list(reversed(range(len(output_size))))
 
@@ -3102,9 +3143,11 @@ class LoopBodyBlock:
                 index = add_index(index, "writes", name)
                 return self._inner.store(name, index, value, mode)
 
-            def reduction(self, name, dtype, reduction_type, index, value):
+            def reduction(self, name, dtype, src_dtype, reduction_type, index, value):
                 index = add_index(index, "writes", name)
-                return self._inner.reduction(name, dtype, reduction_type, index, value)
+                return self._inner.reduction(
+                    name, dtype, src_dtype, reduction_type, index, value
+                )
 
             def index_expr(self, index, dtype):
                 if isinstance(index, (int, sympy.Integer)):
