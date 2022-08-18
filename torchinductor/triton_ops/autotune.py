@@ -1,6 +1,4 @@
-import itertools
 import logging
-from typing import List
 
 import triton
 from triton import Config
@@ -250,39 +248,6 @@ def reduction_heuristics(size_hints):
     raise NotImplementedError(f"size_hints: {size_hints}")
 
 
-def get_list_block(start_val, num, min_val):
-    x = max(start_val, min_val)
-    res = [x]
-    for _ in range(num - 1):
-        x = x // 2
-        if x < min_val:
-            return res
-        res.append(max(x, min_val))
-
-    return res
-
-
-def get_BLOCK_configs(
-    BLOCK_start: List[int], BLOCK_max: List[int], BLOCK_min: List[int], num_block=2
-):
-    """
-    input:
-        BLOCK_start: the starting value of BLOCK in each dimensin
-        BLOCK_max: the maximum BLOCK size in each dimension
-        BLOCK_min: the minumum BLOCK size in each dimension
-    output:
-        BLOCK_lists(num of BLOCK dimension x num_block): the candidate BLOCK values in each dimension
-    """
-    assert len(BLOCK_start) == len(BLOCK_max) == len(BLOCK_min)
-    BLOCK_lists = []
-    for i in range(len(BLOCK_start)):
-        BLOCK_start[i] = max(
-            min(next_power_of_2(BLOCK_start[i]), BLOCK_max[i]), BLOCK_min[i]
-        )
-        BLOCK_lists.append(get_list_block(BLOCK_start[i], num_block, BLOCK_min[i]))
-    return BLOCK_lists
-
-
 def triton_conv_config(size_hints, x, y=None, z=None, num_stages=1):
     """
     Construct a pointwise triton config with some adjustment heuristics
@@ -336,6 +301,11 @@ def triton_conv_config(size_hints, x, y=None, z=None, num_stages=1):
     return Config(cfg, num_warps=num_warps, num_stages=num_stages)
 
 
+def conv_mm_configs(BLOCK_M, BLOCK_N, BLOCK_K, num_warps, num_stages, **kwargs):
+    block_dict = {"BLOCK_M": BLOCK_M, "BLOCK_N": BLOCK_N, "BLOCK_K": BLOCK_K, **kwargs}
+    return triton.Config(block_dict, num_stages=num_warps, num_warps=num_stages)
+
+
 def conv_heuristics(size_hints=None):
     BLOCK_max = [512] * 3
     if size_hints:
@@ -344,54 +314,24 @@ def conv_heuristics(size_hints=None):
             if size_hints[i]:
                 BLOCK_max[i] = max(min(size_hints[i], BLOCK_max[i]), 16)
     configs = [
-        triton.Config(
-            {"BLOCK_M": 256, "BLOCK_N": 64, "BLOCK_K": 32}, num_stages=4, num_warps=8
-        ),
-        triton.Config(
-            {"BLOCK_M": 256, "BLOCK_N": 32, "BLOCK_K": 64}, num_stages=4, num_warps=4
-        ),
-        triton.Config(
-            {"BLOCK_M": 256, "BLOCK_N": 32, "BLOCK_K": 32}, num_stages=4, num_warps=4
-        ),
-        triton.Config(
-            {"BLOCK_M": 128, "BLOCK_N": 128, "BLOCK_K": 32}, num_stages=4, num_warps=8
-        ),
-        triton.Config(
-            {"BLOCK_M": 128, "BLOCK_N": 128, "BLOCK_K": 32}, num_stages=2, num_warps=8
-        ),
-        triton.Config(
-            {"BLOCK_M": 128, "BLOCK_N": 64, "BLOCK_K": 64}, num_stages=2, num_warps=8
-        ),
-        triton.Config(
-            {"BLOCK_M": 128, "BLOCK_N": 64, "BLOCK_K": 64}, num_stages=4, num_warps=4
-        ),
-        triton.Config(
-            {"BLOCK_M": 128, "BLOCK_N": 64, "BLOCK_K": 32}, num_stages=4, num_warps=4
-        ),
-        triton.Config(
-            {"BLOCK_M": 128, "BLOCK_N": 64, "BLOCK_K": 16}, num_stages=3, num_warps=4,
-        ),
-        triton.Config(
-            {"BLOCK_M": 128, "BLOCK_N": 16, "BLOCK_K": 32}, num_stages=4, num_warps=4
-        ),
-        triton.Config(
-            {"BLOCK_M": 64, "BLOCK_N": 128, "BLOCK_K": 64}, num_stages=4, num_warps=8
-        ),
-        triton.Config(
-            {"BLOCK_M": 64, "BLOCK_N": 128, "BLOCK_K": 32}, num_stages=4, num_warps=8
-        ),
-        triton.Config(
-            {"BLOCK_M": 64, "BLOCK_N": 64, "BLOCK_K": 64}, num_stages=4, num_warps=4
-        ),
-        triton.Config(
-            {"BLOCK_M": 64, "BLOCK_N": 64, "BLOCK_K": 32}, num_stages=4, num_warps=4
-        ),
+        conv_mm_configs(256, 64, 32, 8, 2),
+        conv_mm_configs(256, 32, 64, 4, 4),
+        conv_mm_configs(256, 32, 32, 4, 4),
+        conv_mm_configs(128, 128, 32, 8, 4),
+        conv_mm_configs(128, 64, 32, 8, 4),
+        conv_mm_configs(128, 32, 64, 4, 4),
+        conv_mm_configs(128, 16, 32, 4, 4),
+        conv_mm_configs(64, 128, 64, 8, 4),
+        conv_mm_configs(64, 128, 32, 8, 4),
+        conv_mm_configs(64, 128, 32, 4, 4),
+        conv_mm_configs(64, 64, 32, 4, 4),
+        conv_mm_configs(64, 32, 32, 4, 4),
     ]
     configs = list(
         filter(
             lambda c: c.kwargs["BLOCK_M"] <= BLOCK_max[0]
-            or c.kwargs["BLOCK_N"] <= BLOCK_max[1]
-            or c.kwargs["BLOCK_K"] <= BLOCK_max[2],
+            and c.kwargs["BLOCK_N"] <= BLOCK_max[1]
+            and c.kwargs["BLOCK_K"] <= BLOCK_max[2],
             configs,
         )
     )
@@ -438,123 +378,44 @@ def mm_heuristics():
 
 
 def mm_autotune(size_hints=None, get_io_bound_configs=False):
-    # BLOCK_M, BLOCK_N, BLOCK_K hints
-    BLOCK_start = [256, 128, 128]
-    BLOCK_max = [256, 128, 128]
-    BLOCK_min = [32, 32, 32]
+    BLOCK_max = [512] * 3
     if size_hints:
         assert len(size_hints) == 3
         for i in range(len(size_hints)):
             if size_hints[i]:
-                BLOCK_start[i] = size_hints[i]
-    # candidate BLOCK sizes list
-    BLOCK_lists = get_BLOCK_configs(BLOCK_start, BLOCK_max, BLOCK_min)
-    configs = []
-    for BLOCK_M, BLOCK_N, BLOCK_K in itertools.product(*BLOCK_lists):
-        if conditional_product(BLOCK_M, BLOCK_N, BLOCK_K) > 256 * 64 * 64:
-            continue
-        config_dict = {"BLOCK_M": BLOCK_M, "BLOCK_N": BLOCK_N, "BLOCK_K": BLOCK_K}
-        num_warps = next_power_of_2(
-            min(max(conditional_product(BLOCK_M, BLOCK_N, BLOCK_K) // 65536, 1), 8)
-        )
-        num_stages = min(16 // num_warps, 5)
-        configs.append(Config(config_dict, num_warps=num_warps, num_stages=num_stages))
-    # configs = [
-    #     # basic configs for compute-bound matmuls
-    #     triton.Config(
-    #         {"BLOCK_M": 128, "BLOCK_N": 256, "BLOCK_K": 32, "SPLIT_K": 1},
-    #         num_stages=3,
-    #         num_warps=8,
-    #     ),
-    #     triton.Config(
-    #         {"BLOCK_M": 256, "BLOCK_N": 128, "BLOCK_K": 32, "SPLIT_K": 1},
-    #         num_stages=3,
-    #         num_warps=8,
-    #     ),
-    #     triton.Config(
-    #         {"BLOCK_M": 256, "BLOCK_N": 64, "BLOCK_K": 32, "SPLIT_K": 1},
-    #         num_stages=4,
-    #         num_warps=4,
-    #     ),
-    #     triton.Config(
-    #         {"BLOCK_M": 64, "BLOCK_N": 256, "BLOCK_K": 32, "SPLIT_K": 1},
-    #         num_stages=4,
-    #         num_warps=4,
-    #     ),
-    #     triton.Config(
-    #         {"BLOCK_M": 128, "BLOCK_N": 128, "BLOCK_K": 32, "SPLIT_K": 1},
-    #         num_stages=4,
-    #         num_warps=4,
-    #     ),
-    #     triton.Config(
-    #         {"BLOCK_M": 128, "BLOCK_N": 64, "BLOCK_K": 32, "SPLIT_K": 1},
-    #         num_stages=4,
-    #         num_warps=4,
-    #     ),
-    #     triton.Config(
-    #         {"BLOCK_M": 64, "BLOCK_N": 128, "BLOCK_K": 32, "SPLIT_K": 1},
-    #         num_stages=4,
-    #         num_warps=4,
-    #     ),
-    #     triton.Config(
-    #         {"BLOCK_M": 128, "BLOCK_N": 32, "BLOCK_K": 32, "SPLIT_K": 1},
-    #         num_stages=4,
-    #         num_warps=4,
-    #     ),
-    #     triton.Config(
-    #         {"BLOCK_M": 64, "BLOCK_N": 32, "BLOCK_K": 32, "SPLIT_K": 1},
-    #         num_stages=5,
-    #         num_warps=2,
-    #     ),
-    #     # good for int8
-    #     triton.Config(
-    #         {"BLOCK_M": 128, "BLOCK_N": 256, "BLOCK_K": 128, "SPLIT_K": 1},
-    #         num_stages=3,
-    #         num_warps=8,
-    #     ),
-    #     triton.Config(
-    #         {"BLOCK_M": 256, "BLOCK_N": 128, "BLOCK_K": 128, "SPLIT_K": 1},
-    #         num_stages=3,
-    #         num_warps=8,
-    #     ),
-    #     triton.Config(
-    #         {"BLOCK_M": 256, "BLOCK_N": 64, "BLOCK_K": 128, "SPLIT_K": 1},
-    #         num_stages=4,
-    #         num_warps=4,
-    #     ),
-    #     triton.Config(
-    #         {"BLOCK_M": 64, "BLOCK_N": 256, "BLOCK_K": 128, "SPLIT_K": 1},
-    #         num_stages=4,
-    #         num_warps=4,
-    #     ),
-    #     triton.Config(
-    #         {"BLOCK_M": 128, "BLOCK_N": 128, "BLOCK_K": 128, "SPLIT_K": 1},
-    #         num_stages=4,
-    #         num_warps=4,
-    #     ),
-    #     triton.Config(
-    #         {"BLOCK_M": 128, "BLOCK_N": 64, "BLOCK_K": 64, "SPLIT_K": 1},
-    #         num_stages=4,
-    #         num_warps=4,
-    #     ),
-    #     triton.Config(
-    #         {"BLOCK_M": 64, "BLOCK_N": 128, "BLOCK_K": 64, "SPLIT_K": 1},
-    #         num_stages=4,
-    #         num_warps=4,
-    #     ),
-    #     triton.Config(
-    #         {"BLOCK_M": 128, "BLOCK_N": 32, "BLOCK_K": 64, "SPLIT_K": 1},
-    #         num_stages=4,
-    #         num_warps=4,
-    #     ),
-    #     triton.Config(
-    #         {"BLOCK_M": 64, "BLOCK_N": 32, "BLOCK_K": 64, "SPLIT_K": 1},
-    #         num_stages=5,
-    #         num_warps=2,
-    #     ),
-    # ]
+                BLOCK_max[i] = max(min(size_hints[i], BLOCK_max[i]), 16)
+    configs = [
+        # basic configs for compute-bound matmuls
+        conv_mm_configs(256, 128, 32, 8, 3, SPILT_K=1),
+        conv_mm_configs(256, 64, 32, 4, 4, SPILT_K=1),
+        conv_mm_configs(128, 256, 32, 8, 3, SPILT_K=1),
+        conv_mm_configs(128, 128, 32, 4, 4, SPILT_K=1),
+        conv_mm_configs(128, 64, 32, 4, 4, SPILT_K=1),
+        conv_mm_configs(128, 32, 32, 4, 4, SPILT_K=1),
+        conv_mm_configs(64, 256, 32, 4, 4, SPILT_K=1),
+        conv_mm_configs(64, 128, 32, 4, 4, SPILT_K=1),
+        conv_mm_configs(64, 32, 32, 2, 5, SPILT_K=1),
+        # good for int8
+        conv_mm_configs(256, 128, 128, 8, 3, SPILT_K=1),
+        conv_mm_configs(256, 64, 128, 4, 4, SPILT_K=1),
+        conv_mm_configs(128, 256, 128, 8, 3, SPILT_K=1),
+        conv_mm_configs(128, 128, 128, 4, 4, SPILT_K=1),
+        conv_mm_configs(128, 64, 64, 4, 4, SPILT_K=1),
+        conv_mm_configs(128, 32, 64, 4, 4, SPILT_K=1),
+        conv_mm_configs(64, 256, 128, 4, 4, SPILT_K=1),
+        conv_mm_configs(64, 128, 64, 4, 4, SPILT_K=1),
+        conv_mm_configs(64, 32, 64, 2, 5, SPILT_K=1),
+    ]
     if get_io_bound_configs:
         configs += get_configs_io_bound()
+    configs = list(
+        filter(
+            lambda c: c.kwargs["BLOCK_M"] <= BLOCK_max[0]
+            and c.kwargs["BLOCK_N"] <= BLOCK_max[1]
+            and c.kwargs["BLOCK_K"] <= BLOCK_max[2],
+            configs,
+        )
+    )
     key = ["M", "N", "K"]
     prune_configs_by = {
         "early_config_prune": mm_early_config_prune,

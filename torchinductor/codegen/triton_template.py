@@ -37,8 +37,8 @@ class TritonTemplateKernel(TritonKernel):
             KERNEL_W = self.args_dict["KERNEL_W"]
             padding_h = self.args_dict["padding_h"]
             padding_w = self.args_dict["padding_w"]
-            if ((KERNEL_H == "1" and KERNEL_W == "1")) or (
-                (padding_h == "0") and (padding_w == "0")
+            if ((KERNEL_H == 1 and KERNEL_W == 1)) or (
+                (padding_h == 0) and (padding_w == 0)
             ):
                 self.template_name += "_delta_x"
             else:

@@ -37,8 +37,6 @@ def estimate_conv_time(
     M = BATCH * OUT_H * OUT_W
     N = KERNEL_N
     K = KERNEL_H * KERNEL_W * IN_C
-    IN_SIZE = BATCH * IN_H * IN_W * IN_C
-    # OUT_SIZE = BATCH * OUT_H * OUT_W * KERNEL_N
     num_cta_m = triton.cdiv(M, BLOCK_M)
     num_cta_n = triton.cdiv(N, BLOCK_N)
     num_cta_k = 1
@@ -67,8 +65,8 @@ def estimate_conv_time(
     l2_bw = dram_bw * 4  # rough estimation (should be 4.7 for A100?)
     # assume 80% of (following) loads are in L2 cache
     # convolution have overlap!!
-    load_a_dram = IN_SIZE * dtsize * (1 + 0.2 * (num_cta_n - 1))
-    load_a_l2 = IN_SIZE * dtsize * 0.8 * (num_cta_n - 1)
+    load_a_dram = M * K * dtsize * (1 + 0.2 * (num_cta_n - 1))
+    load_a_l2 = M * K * dtsize * 0.8 * (num_cta_n - 1)
     load_b_dram = N * K * dtsize * (1 + 0.2 * (num_cta_m - 1))
     load_b_l2 = N * K * dtsize * 0.8 * (num_cta_m - 1)
     # total
