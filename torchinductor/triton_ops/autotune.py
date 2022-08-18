@@ -306,7 +306,7 @@ def conv_mm_configs(BLOCK_M, BLOCK_N, BLOCK_K, num_warps, num_stages, **kwargs):
     return triton.Config(block_dict, num_stages=num_warps, num_warps=num_stages)
 
 
-def conv_heuristics(size_hints=None):
+def conv_autotune(size_hints=None):
     BLOCK_max = [512] * 3
     if size_hints:
         assert len(size_hints) == 3
@@ -386,25 +386,25 @@ def mm_autotune(size_hints=None, get_io_bound_configs=False):
                 BLOCK_max[i] = max(min(size_hints[i], BLOCK_max[i]), 16)
     configs = [
         # basic configs for compute-bound matmuls
-        conv_mm_configs(256, 128, 32, 8, 3, SPILT_K=1),
-        conv_mm_configs(256, 64, 32, 4, 4, SPILT_K=1),
-        conv_mm_configs(128, 256, 32, 8, 3, SPILT_K=1),
-        conv_mm_configs(128, 128, 32, 4, 4, SPILT_K=1),
-        conv_mm_configs(128, 64, 32, 4, 4, SPILT_K=1),
-        conv_mm_configs(128, 32, 32, 4, 4, SPILT_K=1),
-        conv_mm_configs(64, 256, 32, 4, 4, SPILT_K=1),
-        conv_mm_configs(64, 128, 32, 4, 4, SPILT_K=1),
-        conv_mm_configs(64, 32, 32, 2, 5, SPILT_K=1),
+        conv_mm_configs(256, 128, 32, 8, 3, SPLIT_K=1),
+        conv_mm_configs(256, 64, 32, 4, 4, SPLIT_K=1),
+        conv_mm_configs(128, 256, 32, 8, 3, SPLIT_K=1),
+        conv_mm_configs(128, 128, 32, 4, 4, SPLIT_K=1),
+        conv_mm_configs(128, 64, 32, 4, 4, SPLIT_K=1),
+        conv_mm_configs(128, 32, 32, 4, 4, SPLIT_K=1),
+        conv_mm_configs(64, 256, 32, 4, 4, SPLIT_K=1),
+        conv_mm_configs(64, 128, 32, 4, 4, SPLIT_K=1),
+        conv_mm_configs(64, 32, 32, 2, 5, SPLIT_K=1),
         # good for int8
-        conv_mm_configs(256, 128, 128, 8, 3, SPILT_K=1),
-        conv_mm_configs(256, 64, 128, 4, 4, SPILT_K=1),
-        conv_mm_configs(128, 256, 128, 8, 3, SPILT_K=1),
-        conv_mm_configs(128, 128, 128, 4, 4, SPILT_K=1),
-        conv_mm_configs(128, 64, 64, 4, 4, SPILT_K=1),
-        conv_mm_configs(128, 32, 64, 4, 4, SPILT_K=1),
-        conv_mm_configs(64, 256, 128, 4, 4, SPILT_K=1),
-        conv_mm_configs(64, 128, 64, 4, 4, SPILT_K=1),
-        conv_mm_configs(64, 32, 64, 2, 5, SPILT_K=1),
+        conv_mm_configs(256, 128, 128, 8, 3, SPLIT_K=1),
+        conv_mm_configs(256, 64, 128, 4, 4, SPLIT_K=1),
+        conv_mm_configs(128, 256, 128, 8, 3, SPLIT_K=1),
+        conv_mm_configs(128, 128, 128, 4, 4, SPLIT_K=1),
+        conv_mm_configs(128, 64, 64, 4, 4, SPLIT_K=1),
+        conv_mm_configs(128, 32, 64, 4, 4, SPLIT_K=1),
+        conv_mm_configs(64, 256, 128, 4, 4, SPLIT_K=1),
+        conv_mm_configs(64, 128, 64, 4, 4, SPLIT_K=1),
+        conv_mm_configs(64, 32, 64, 2, 5, SPLIT_K=1),
     ]
     if get_io_bound_configs:
         configs += get_configs_io_bound()

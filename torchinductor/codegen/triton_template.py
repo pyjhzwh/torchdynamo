@@ -145,7 +145,7 @@ class TritonTemplateKernel(TritonKernel):
         code = IndentedBuffer()
 
         if isinstance(self.node, ir.Convolution):
-            autotune = "conv_heuristics"
+            autotune = "conv_autotune"
             BATCH = self.args_dict["BATCH"]
             OUT_H = self.args_dict["OUT_H"]
             OUT_W = self.args_dict["OUT_W"]
@@ -190,7 +190,7 @@ class TritonTemplateKernel(TritonKernel):
 
             code.splice(
                 f"""
-                    @{heuristics}
+                    @{heuristics}()
                     @{autotune}(size_hints={size_hints!r}, get_io_bound_configs={get_io_bound_configs})
                     @triton.jit
                 """
