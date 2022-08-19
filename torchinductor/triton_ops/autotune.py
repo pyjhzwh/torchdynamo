@@ -5,7 +5,6 @@ from triton import Config
 from triton import cdiv
 from triton import heuristics
 from triton import next_power_of_2
-from triton.ops.matmul import get_configs_io_bound
 from triton.ops.matmul_perf_model import early_config_prune as mm_early_config_prune
 
 from torchinductor import config
@@ -303,7 +302,7 @@ def triton_conv_config(size_hints, x, y=None, z=None, num_stages=1):
 
 def conv_mm_configs(BLOCK_M, BLOCK_N, BLOCK_K, num_warps, num_stages, **kwargs):
     block_dict = {"BLOCK_M": BLOCK_M, "BLOCK_N": BLOCK_N, "BLOCK_K": BLOCK_K, **kwargs}
-    return triton.Config(block_dict, num_stages=num_warps, num_warps=num_stages)
+    return triton.Config(block_dict, num_warps=num_warps, num_stages=num_stages)
 
 
 def conv_autotune(size_hints=None):
@@ -315,17 +314,18 @@ def conv_autotune(size_hints=None):
                 BLOCK_max[i] = max(min(size_hints[i], BLOCK_max[i]), 16)
     configs = [
         conv_mm_configs(256, 64, 32, 8, 2),
-        conv_mm_configs(256, 32, 64, 4, 4),
+        # conv_mm_configs(256, 32, 64, 4, 4),
         conv_mm_configs(256, 32, 32, 4, 4),
-        conv_mm_configs(128, 128, 32, 8, 4),
-        conv_mm_configs(128, 64, 32, 8, 4),
-        conv_mm_configs(128, 32, 64, 4, 4),
+        conv_mm_configs(128, 128, 32, 8, 2),
+        # conv_mm_configs(128, 64, 32, 8, 4),
+        # conv_mm_configs(128, 32, 64, 4, 4),
         conv_mm_configs(128, 16, 32, 4, 4),
-        conv_mm_configs(64, 128, 64, 8, 4),
-        conv_mm_configs(64, 128, 32, 8, 4),
+        # conv_mm_configs(64, 128, 64, 8, 4),
+        # conv_mm_configs(64, 128, 32, 8, 4),
         conv_mm_configs(64, 128, 32, 4, 4),
         conv_mm_configs(64, 64, 32, 4, 4),
-        conv_mm_configs(64, 32, 32, 4, 4),
+        # conv_mm_configs(64, 32, 32, 4, 4),
+        conv_mm_configs(32, 128, 32, 2, 4),
     ]
     configs = list(
         filter(
@@ -335,6 +335,10 @@ def conv_autotune(size_hints=None):
             configs,
         )
     )
+    if len(configs) == 0:
+        configs = [
+            conv_mm_configs(64, 64, 32, 4, 4),
+        ]
     key = [
         "BATCH",
         "IN_C",
@@ -377,6 +381,26 @@ def mm_heuristics():
     return mm_heuristic
 
 
+def init_to_zero(name):
+    return lambda nargs: nargs[name].zero_()
+
+
+def get_configs_io_bound():
+    configs = []
+    for num_stages in [2, 3, 4, 5, 6]:
+        for block_m in [16, 32]:
+            for block_k in [32, 64]:
+                for block_n in [32, 64, 128, 256]:
+                    num_warps = 2 if block_n <= 64 else 4
+                    configs.append(
+                        triton.Config({'BLOCK_M': block_m, 'BLOCK_N': block_n, 'BLOCK_K': block_k, 'SPLIT_K': 1},
+                                      num_stages=num_stages, num_warps=num_warps))
+                    # split_k
+                    for split_k in [2, 4, 8, 16]:
+                        configs.append(triton.Config({'BLOCK_M': block_m, 'BLOCK_N': block_n, 'BLOCK_K': block_k, 'SPLIT_K': split_k},
+                                                     num_stages=num_stages, num_warps=num_warps, pre_hook=init_to_zero('C')))
+    return configs
+
 def mm_autotune(size_hints=None, get_io_bound_configs=False):
     BLOCK_max = [512] * 3
     if size_hints:
@@ -395,6 +419,7 @@ def mm_autotune(size_hints=None, get_io_bound_configs=False):
         conv_mm_configs(64, 256, 32, 4, 4, SPLIT_K=1),
         conv_mm_configs(64, 128, 32, 4, 4, SPLIT_K=1),
         conv_mm_configs(64, 32, 32, 2, 5, SPLIT_K=1),
+        conv_mm_configs(32, 128, 32, 4, 4, SPLIT_K=1),
         # good for int8
         conv_mm_configs(256, 128, 128, 8, 3, SPLIT_K=1),
         conv_mm_configs(256, 64, 128, 4, 4, SPLIT_K=1),
@@ -405,6 +430,8 @@ def mm_autotune(size_hints=None, get_io_bound_configs=False):
         conv_mm_configs(64, 256, 128, 4, 4, SPLIT_K=1),
         conv_mm_configs(64, 128, 64, 4, 4, SPLIT_K=1),
         conv_mm_configs(64, 32, 64, 2, 5, SPLIT_K=1),
+        conv_mm_configs(16, 16, 32, 2, 4, SPLIT_K=1),
+        conv_mm_configs(16, 16, 16, 2, 4, SPLIT_K=1),
     ]
     if get_io_bound_configs:
         configs += get_configs_io_bound()
