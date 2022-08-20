@@ -1,4 +1,9 @@
+import builtins
 import logging
+import time
+
+from collections import OrderedDict
+from typing import Dict
 
 import triton
 from triton import Config
@@ -17,10 +22,39 @@ from .conv_perf_model import estimate_conv_time
 log = logging.getLogger(__name__)
 
 
+class LRUCache:
+    def __init__(self, capacity: int, list_capacity: int):
+        self.cache = OrderedDict()
+        self.capacity = capacity
+        self.list_capacity = list_capacity
+
+    def get(self, key: int) -> int:
+        if key not in self.cache:
+            return -1
+        else:
+            self.cache.move_to_end(key)
+            return self.cache[key]
+ 
+    def put(self, key: int, value: int) -> None:
+        if key in self.cache:
+            if len(self.cache[key]) < self.list_capacity and value not in self.cache[key]:
+                self.cache[key].append(value)
+        else:
+            self.cache[key] = [value]
+        self.cache.move_to_end(key)
+        if len(self.cache) > self.capacity:
+            self.cache.popitem(last = False)
+
+
+autotuner_cache = LRUCache(50, 3)
+
 class Autotuner(triton.code_gen.Autotuner):
     """
     Customized triton autotuner
     """
+    def __init__(self, kernel, arg_names, configs, key, reset_to_zero, prune_configs_by: Dict = None, kernel_type=None):
+        super().__init__(kernel, arg_names, configs, key, reset_to_zero, prune_configs_by)
+        self.kernel_type=kernel_type
 
     def _bench(self, *args, config, **kwargs):
         try:
@@ -29,8 +63,50 @@ class Autotuner(triton.code_gen.Autotuner):
             log.warning("OutOfResources: %s %s", e, config)
             return (float("inf"), float("inf"), float("inf"))
 
+    def __call__(self, *args, **kwargs):
+        self.nargs = dict(zip(self.arg_names, args))
+        candidate_configs = self.configs
+        if self.kernel_type:
+            cache_key = ",".join([str(args[i]) for i in self.key_idx])
+            cache_key = self.kernel_type + "," + cache_key
+            cached_configs = autotuner_cache.get(cache_key)
+            if cached_configs != -1 and len(cached_configs) == autotuner_cache.list_capacity:
+                candidate_configs = cached_configs
+                
+        if len(candidate_configs) > 1:
+            key = tuple([args[i] for i in self.key_idx])
+            if key not in self.cache:
+                # prune configs
+                pruned_configs = candidate_configs
+                if self.early_config_prune:
+                    pruned_configs = self.early_config_prune(candidate_configs, self.nargs)
+                if self.perf_model:
+                    top_k = self.configs_top_k
+                    if isinstance(top_k, float) and top_k <= 1.0:
+                        top_k = int(len(candidate_configs) * top_k)
+                    if len(pruned_configs) > top_k:
+                        est_timing = {config: self.perf_model(**self.nargs, **kwargs, **config.kwargs, num_stages=config.num_stages, num_warps=config.num_warps) for config in pruned_configs}
+                        pruned_configs = sorted(est_timing.keys(), key=lambda x: est_timing[x])[:top_k]
+                bench_start = time.time()
+                timings = {config: self._bench(*args, config=config, **kwargs)
+                           for config in pruned_configs}
+                bench_end = time.time()
+                self.bench_time = bench_end - bench_start
+                self.cache[key] = builtins.min(timings, key=timings.get)
+                self.hook(args)
+                self.configs_timings = timings
+            config = self.cache[key]
+            if self.kernel_type:
+                autotuner_cache.put(cache_key, config)
+        else:
+            config = candidate_configs[0]
+        self.best_config = config
+        if config.pre_hook is not None:
+            config.pre_hook(self.nargs)
+        return self.kernel(*args, num_warps=config.num_warps, num_stages=config.num_stages, **kwargs, **config.kwargs)
 
-def autotune(configs, key, prune_configs_by=None, reset_to_zero=None):
+
+def autotune(configs, key, prune_configs_by=None, reset_to_zero=None, kernel_type=None):
     """
     A copy of triton.autotune that calls our subclass above
     """
@@ -38,7 +114,7 @@ def autotune(configs, key, prune_configs_by=None, reset_to_zero=None):
     def decorator(fn):
         def wrapper(kernel):
             return Autotuner(
-                kernel, fn.arg_names, configs, key, reset_to_zero, prune_configs_by
+                kernel, fn.arg_names, configs, key, reset_to_zero, prune_configs_by, kernel_type
             )
 
         fn.kernel_decorators.append(wrapper)
@@ -369,7 +445,7 @@ def conv_autotune(size_hints=None):
         "perf_model": estimate_conv_time,
         "top_k": 10,
     }
-    return autotune(configs, key, prune_configs_by=prune_configs_by)
+    return autotune(configs, key, prune_configs_by=prune_configs_by, kernel_type="conv")
 
 
 def mm_heuristics():
@@ -447,9 +523,9 @@ def mm_autotune(size_hints=None, get_io_bound_configs=False):
     prune_configs_by = {
         "early_config_prune": mm_early_config_prune,
         "perf_model": estimate_matmul_time,
-        "top_k": 10,
+        "top_k": 1.0,
     }
-    return autotune(configs, key, prune_configs_by=prune_configs_by)
+    return autotune(configs, key, prune_configs_by=prune_configs_by, kernel_type="mm")
 
 
 def grid(xnumel, ynumel=None, znumel=None):
