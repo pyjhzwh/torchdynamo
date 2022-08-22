@@ -2,8 +2,8 @@ import torch
 import triton
 import triton.language as tl
 
-# from triton.ops.matmul_perf_model import early_config_prune
-# from triton.ops.matmul_perf_model import estimate_matmul_time
+from triton.ops.matmul_perf_model import early_config_prune
+from triton.ops.matmul_perf_model import estimate_matmul_time
 
 
 def init_to_zero(name):
@@ -160,11 +160,11 @@ def init_to_zero(name):
     key=["M", "N", "K"],
     #
     # key=["M", "N", "K"],
-    # prune_configs_by={
-    #     "early_config_prune": early_config_prune,
-    #     "perf_model": estimate_matmul_time,
-    #     "top_k": 18,
-    # },
+    prune_configs_by={
+        "early_config_prune": early_config_prune,
+        "perf_model": estimate_matmul_time,
+        "top_k": 10,
+    },
 )
 @triton.jit
 def _kernel(
