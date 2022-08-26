@@ -293,7 +293,21 @@ def template_can_fuse(snode1, snode2):
     for node in snode2.get_nodes():
         if not TritonKernel.is_compatible(tiling, node.get_ranges()):
             return False
-    return True
+    # Only allow vertical fusion for templates to avoid CUDA error
+    # Could be removed if https://github.com/pytorch/torchdynamo/issues/1054 is fixed
+    re_fuse = True
+    epilogue_candidates = snode2.get_nodes()
+    vertical_reads = snode1.get_names()
+    while re_fuse:
+        re_fuse = False
+        for node in epilogue_candidates:
+            for read in node.read_writes.reads:
+                if read.name in vertical_reads:
+                    epilogue_candidates.remove(node)
+                    vertical_reads.add(node.node.name)
+                    re_fuse = True
+                    break
+    return len(epilogue_candidates) == 0
 
 
 def template_codegen(scheduler, scheduler_node, epilogue):
